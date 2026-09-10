@@ -106,18 +106,29 @@ def upload(tag, commit, tag_sha, directory):
     item = release(tag)
     require_draft(item)
     if not item:
-        run('gh', 'release', 'create', tag, '--draft', '--generate-notes',
-            '--title', f'open-mpv {tag[1:]}', '--verify-tag', '--target', commit)
-        item = release(tag)
-    if not item:
-        raise ValueError('Draft was not found after creation.')
+        # Creation returns the draft identity even before release listings catch
+        # up. Never create twice or rediscover the result through a stale list.
+        item = json.loads(run(
+            'gh', 'api', '--method', 'POST', f'repos/{os.environ["GH_REPO"]}/releases',
+            '-f', f'tag_name={tag}', '-f', f'target_commitish={commit}',
+            '-f', f'name=open-mpv {tag[1:]}', '-F', 'draft=true',
+            '-F', 'generate_release_notes=true'))
+        require_draft(item)
+        if item['tag_name'] != tag:
+            raise ValueError('Created draft does not match the verified tag.')
     existing = list(pages(f'releases/{item["id"]}/assets'))
     missing = asset_plan(existing, directory)
     for name in missing:
         validate(tag, commit, tag_sha)
         current = api(f'releases/{item["id"]}')
         require_draft(current)
-        run('gh', 'release', 'upload', tag, str(directory / name))
+        # Keep the release identity through the write too. `gh release upload`
+        # would perform another tag lookup instead of using this known draft.
+        run('gh', 'api', '--method', 'POST',
+            f'https://uploads.github.com/repos/{os.environ["GH_REPO"]}/releases/{item["id"]}/assets?name={name}',
+            '-H', 'Content-Type: application/octet-stream',
+            '-H', f'Content-Length: {(directory / name).stat().st_size}',
+            '--input', str(directory / name))
     summary = (f'Draft: {item["html_url"]}\nCommit: {commit}\nTag: {tag} ({tag_sha})\n'
                f'RPM SHA-256: {digest(directory / RPM)}\n'
                'Download and validate these exact assets before manual publication.\n')
